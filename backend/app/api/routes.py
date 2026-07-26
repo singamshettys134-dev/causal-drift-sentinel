@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from app.config import settings
 from app.lineage.dag import build_dag
 from app.lineage.datahub_client import get_lineage_client
 from app.models.schemas import LineageGraph
@@ -33,8 +34,9 @@ async def investigate(model_urn: str = "urn:li:mlModel:(demo,fraud_model_v3,PROD
     """
     try:
         result = await run_full_pipeline(model_urn=model_urn, inject_drift=inject_drift)
-    except Exception as exc:  # noqa: BLE001 - surface a clean 500 to the frontend
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - never leak internals to the client
+        detail = str(exc) if settings.ENV == "development" else "Pipeline execution failed. Check server logs."
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     return {
         "graph": result["graph"],

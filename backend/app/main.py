@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.config import settings
 
 app = FastAPI(
     title="Causal Drift Sentinel",
@@ -13,10 +14,12 @@ app = FastAPI(
     version="0.1.0",
 )
 
+_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")] if settings.ALLOWED_ORIGINS != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # demo/dev only; restrict in production
-    allow_credentials=True,
+    allow_origins=_origins,  # set ALLOWED_ORIGINS in .env before deploying publicly
+    allow_credentials=_origins != ["*"],  # credentials + wildcard origin is invalid per browser spec
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # --- GitHub integration ------------------------------------------------
     GITHUB_TOKEN: str = ""
     GITHUB_REPO: str = ""  # "owner/repo"
+    # Explicit safety gate: even if GITHUB_TOKEN/GITHUB_REPO are set, a public
+    # demo deployment must opt in to live write-backs, so a stranger hitting
+    # /api/investigate can't spam real GitHub issues on your repo.
+    WRITEBACK_ENABLED: bool = False
+
+    # --- CORS ----------------------------------------------------------------
+    # Comma-separated list of allowed origins for the deployed frontend.
+    # Defaults to "*" for local dev; set this explicitly before deploying.
+    ALLOWED_ORIGINS: str = "*"
 
     # --- Drift detection thresholds -----------------------------------------
     KS_PVALUE_ALERT_THRESHOLD: float = 0.05

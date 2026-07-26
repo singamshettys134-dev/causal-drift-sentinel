@@ -84,6 +84,8 @@ class WriteBackAgent:
         return await self.lineage_client.write_incident(report.model_urn, payload)
 
     async def open_github_issue(self, report: RootCauseReport) -> str | None:
+        if not settings.WRITEBACK_ENABLED:
+            return None  # safety gate: disabled by default for public demo deployments
         if not settings.GITHUB_TOKEN or not settings.GITHUB_REPO:
             return None
         title = f"[Drift Detected] {report.summary[:80]}"
