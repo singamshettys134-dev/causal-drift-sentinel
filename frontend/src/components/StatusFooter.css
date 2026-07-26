@@ -1,0 +1,36 @@
+.status-footer {
+  display: flex;
+  gap: 32px;
+  border-top: 1px solid var(--hairline);
+  padding: 12px 0;
+  font-size: 11px;
+}
+
+.footer-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.footer-item-right {
+  margin-left: auto;
+  text-align: right;
+}
+
+.footer-label {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 9.5px;
+}
+
+.footer-value {
+  color: var(--text-lo);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+
+.footer-value-ok { color: var(--signal-ok); }

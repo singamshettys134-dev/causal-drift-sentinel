@@ -1,0 +1,52 @@
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.error-banner {
+  background: var(--signal-critical-dim);
+  border: 1px solid var(--signal-critical);
+  color: var(--signal-critical);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 16px;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-lo);
+  padding: 10px 16px;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.tab:hover:not(:disabled) { color: var(--text-hi); }
+
+.tab:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+.tab-active {
+  color: var(--signal-model);
+  border-bottom-color: var(--signal-model);
+}
+
+.main-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 16px;
+}

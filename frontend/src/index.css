@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* --- Token system -----------------------------------------------------
+     Subject: a live incident console for ML pipeline drift. The palette
+     reads as instrumentation, not marketing — a dark signal-analysis
+     surface where color is reserved for meaning (severity), not decoration.
+  ------------------------------------------------------------------------ */
+  --bg-void: #0a0d12;
+  --bg-panel: #12161f;
+  --bg-panel-raised: #171d29;
+  --hairline: #232b3a;
+  --text-hi: #e8ecf4;
+  --text-lo: #7c8698;
+  --text-faint: #4b5468;
+
+  --signal-critical: #ff5d5d;   /* isolated root cause */
+  --signal-critical-dim: #4a2530;
+  --signal-trace: #ffb454;      /* drift detected, being traced */
+  --signal-trace-dim: #453423;
+  --signal-ok: #35d0a0;         /* healthy / no drift */
+  --signal-ok-dim: #1c3a34;
+  --signal-model: #7fa8ff;      /* model / deployment nodes */
+
+  --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-void);
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(127, 168, 255, 0.05), transparent 40%),
+    radial-gradient(circle at 85% 100%, rgba(255, 93, 93, 0.04), transparent 40%);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--signal-model); color: var(--bg-void); }
+
+button {
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+a { color: var(--signal-model); }
+
+:focus-visible {
+  outline: 2px solid var(--signal-model);
+  outline-offset: 2px;
+}
+
+.mono { font-family: var(--font-mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
