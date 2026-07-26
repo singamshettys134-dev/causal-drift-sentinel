@@ -96,6 +96,32 @@ test — that the causal isolator correctly pinpoints the injected root cause
 in the demo scenario and does **not** misattribute the downstream symptom
 as an independent cause.
 
+## Deploying to separate hosts (frontend + backend)
+
+Locally, Vite's dev-server proxy forwards `/api` requests to `localhost:8000`
+automatically — no extra config needed for `npm run dev`.
+
+In production, the frontend and backend are typically deployed on separate
+hosts (e.g. frontend on Vercel/Netlify, backend on Render/Railway/Fly.io).
+In that case, set two things:
+
+**Backend** (set as environment variables on your hosting platform, not in a
+committed file):
+```
+GROQ_API_KEY=<your key>
+USE_MOCK_DATAHUB=true
+WRITEBACK_ENABLED=false      # keep off for a public judge-facing demo
+ENV=production
+ALLOWED_ORIGINS=https://your-frontend-domain.vercel.app
+```
+Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT` (no `--reload`).
+
+**Frontend** — set at build time (see `frontend/.env.example`):
+```
+VITE_API_BASE_URL=https://your-backend-domain.onrender.com
+```
+Build command: `npm install && npm run build`, output directory `dist`.
+
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE).

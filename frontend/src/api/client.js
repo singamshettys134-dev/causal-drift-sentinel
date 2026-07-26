@@ -1,4 +1,7 @@
-const BASE = '/api'
+// In local dev, Vite's proxy (vite.config.js) forwards /api -> localhost:8000.
+// In production, frontend and backend are usually deployed on separate hosts,
+// so set VITE_API_BASE_URL to the deployed backend's URL at build time.
+const BASE = `${import.meta.env.VITE_API_BASE_URL || ''}/api`
 
 export async function investigate({ modelUrn, injectDrift }) {
   const params = new URLSearchParams({
