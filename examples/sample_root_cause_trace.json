@@ -1,0 +1,87 @@
+{
+  "model_urn": "urn:li:mlModel:(demo,fraud_model_v3,PROD)",
+  "prediction_drift": {
+    "model_urn": "urn:li:mlModel:(demo,fraud_model_v3,PROD)",
+    "method": "ks_test",
+    "statistic": 0.5405,
+    "p_value": 1.2602706189329594e-201,
+    "severity": "critical",
+    "detected_at": "2026-07-25T06:00:23.704449Z"
+  },
+  "candidates_examined": [
+    {
+      "node_urn": "urn:li:dataset:(demo,raw_user_profiles,PROD)",
+      "node_name": "raw_user_profiles",
+      "hops_from_model": 2,
+      "drift_result": {
+        "node_urn": "urn:li:dataset:(demo,raw_user_profiles,PROD)",
+        "feature_name": "account_age_days",
+        "method": "ks_test",
+        "statistic": 0.8948333333333334,
+        "p_value": 0.0,
+        "psi_score": null,
+        "severity": "critical",
+        "baseline_window": "training",
+        "current_window": "last_7d",
+        "sample_size_baseline": 2000,
+        "sample_size_current": 1200
+      },
+      "is_genuine_cause": true,
+      "intervention_delta": 0.7767,
+      "confounded_with": []
+    },
+    {
+      "node_urn": "urn:li:mlFeatureTable:(demo,feature_user_risk_score)",
+      "node_name": "feature_user_risk_score",
+      "hops_from_model": 1,
+      "drift_result": {
+        "node_urn": "urn:li:mlFeatureTable:(demo,feature_user_risk_score)",
+        "feature_name": "user_risk_score",
+        "method": "ks_test",
+        "statistic": 0.8948333333333334,
+        "p_value": 0.0,
+        "psi_score": null,
+        "severity": "critical",
+        "baseline_window": "training",
+        "current_window": "last_7d",
+        "sample_size_baseline": 2000,
+        "sample_size_current": 1200
+      },
+      "is_genuine_cause": false,
+      "intervention_delta": 0.0005,
+      "confounded_with": [
+        "urn:li:mlFeatureTable:(demo,feature_device_trust)",
+        "urn:li:dataset:(demo,raw_transactions,PROD)",
+        "urn:li:dataset:(demo,raw_user_profiles,PROD)"
+      ]
+    }
+  ],
+  "isolated_root_causes": [
+    {
+      "node_urn": "urn:li:dataset:(demo,raw_user_profiles,PROD)",
+      "node_name": "raw_user_profiles",
+      "hops_from_model": 2,
+      "drift_result": {
+        "node_urn": "urn:li:dataset:(demo,raw_user_profiles,PROD)",
+        "feature_name": "account_age_days",
+        "method": "ks_test",
+        "statistic": 0.8948333333333334,
+        "p_value": 0.0,
+        "psi_score": null,
+        "severity": "critical",
+        "baseline_window": "training",
+        "current_window": "last_7d",
+        "sample_size_baseline": 2000,
+        "sample_size_current": 1200
+      },
+      "is_genuine_cause": true,
+      "intervention_delta": 0.7767,
+      "confounded_with": []
+    }
+  ],
+  "graph_path": [
+    "urn:li:dataset:(demo,raw_user_profiles,PROD)",
+    "urn:li:mlFeatureTable:(demo,feature_user_risk_score)",
+    "urn:li:mlModel:(demo,fraud_model_v3,PROD)"
+  ]
+}
