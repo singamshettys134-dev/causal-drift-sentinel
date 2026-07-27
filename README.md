@@ -73,11 +73,33 @@ healthy scenario, to show the agent correctly reporting nothing wrong.
 
 ## Connecting to a real DataHub instance
 
-Set `USE_MOCK_DATAHUB=false` and configure `DATAHUB_MCP_URL` / `DATAHUB_TOKEN`
-in `.env`. `backend/app/lineage/datahub_client.py::DataHubMCPClient` talks to
-DataHub's MCP Server for both lineage reads and incident write-backs — no
-other code needs to change, since the mock and real clients share the same
-`LineageGraph` contract.
+Set `USE_MOCK_DATAHUB=false` and configure `DATAHUB_GMS_URL` / `DATAHUB_GMS_TOKEN`
+in `.env`. `backend/app/lineage/datahub_client.py::DataHubMCPClient` spawns the
+official `mcp-server-datahub` as a local subprocess (the same way Claude
+Desktop/Cursor connect to it) and talks to it over stdio using the real tool
+set: `search`, `get_entities`, `get_lineage`, `list_schema_fields`,
+`get_lineage_paths_between` for reads. Write-back uses `add_tags` +
+`update_description` to annotate the model entity (DataHub's MCP server has
+no native "incident" tool) — this requires `DATAHUB_MUTATION_ENABLED=true`
+here *and* `TOOLS_IS_MUTATION_ENABLED=true` on the server itself.
+
+Requires `uv`/`uvx` installed locally (`pip install uv` or see
+[astral.sh/uv](https://astral.sh/uv)), which is what launches the
+`mcp-server-datahub` subprocess. If you installed the server differently,
+adjust `DATAHUB_MCP_COMMAND`/`DATAHUB_MCP_ARGS` accordingly.
+
+If instead you're using DataHub Cloud's managed MCP server, set
+`DATAHUB_MCP_URL` to its SSE endpoint — this takes priority over the
+subprocess path.
+
+No other code needs to change either way, since the mock and real clients
+share the same `LineageGraph` contract.
+
+**Before your demo:** tool parameter names have shifted across
+`mcp-server-datahub` releases. Run a quick smoke test against your installed
+version — call `session.list_tools()` and one real `get_lineage` call — to
+confirm the argument names in `datahub_client.py` still match, and adjust if
+not.
 
 ## Swapping the LLM model
 
@@ -91,10 +113,26 @@ cd backend
 pytest tests/ -v
 ```
 
-Covers the drift engine's statistical correctness, and — the most important
-test — that the causal isolator correctly pinpoints the injected root cause
-in the demo scenario and does **not** misattribute the downstream symptom
-as an independent cause.
+Covers the drift engine's statistical correctness; the causal isolator
+correctly pinpointing the injected root cause and not misattributing the
+downstream symptom as an independent cause; the bootstrap confidence
+interval behind that decision; the LLM reasoning layer's grounding contract
+(it cannot report a root cause the algorithm didn't isolate, even if the
+model hallucinates one, and falls back deterministically if the model
+returns unparseable output); write-back graceful degradation on failure;
+and DataHub lineage-response parsing across the response shapes different
+`mcp-server-datahub` versions have used.
+
+```bash
+cd frontend
+npm test
+```
+
+Covers the lineage-graph node-coloring logic, the root-cause report
+rendering (empty and populated states), and the API client's request
+construction/error handling.
+
+Both suites run in CI on every push/PR — see `.github/workflows/ci.yml`.
 
 ## Deploying to separate hosts (frontend + backend)
 
