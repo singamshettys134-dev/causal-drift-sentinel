@@ -40,6 +40,7 @@ Method (simplified structural intervention):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import networkx as nx
@@ -55,6 +56,8 @@ from app.models.schemas import (
     PredictionDriftResult,
     RootCauseTrace,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +85,7 @@ def _simulate_holding_parent_at_baseline(
     downstream_weights: dict[str, float],
     downstream_baseline: np.ndarray,
     downstream_current_actual: np.ndarray,
+    seed: int = 42,
 ) -> np.ndarray:
     """
     Reconstruct a counterfactual downstream distribution: "what would the
@@ -94,9 +98,13 @@ def _simulate_holding_parent_at_baseline(
     We swap only this parent's contribution from current -> baseline while
     keeping all others (and the noise term, approximated via residual
     resampling) at their current/observed values.
+
+    `seed` controls the random baseline resample — varying it across calls
+    is what lets the caller bootstrap a confidence interval on the
+    resulting intervention effect instead of trusting one draw.
     """
     n = len(downstream_current_actual)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
 
     # Residual/noise: what's left of the current downstream signal after
     # removing every parent's *actual current* linear contribution.
@@ -130,6 +138,37 @@ def _simulate_holding_parent_at_baseline(
     return counterfactual
 
 
+def _correlated_ancestors(
+    candidate_urn: str,
+    candidate_current: np.ndarray,
+    other_ancestor_urns: list[str],
+    upstream_samples: dict,
+    threshold: float = 0.5,
+) -> list[str]:
+    """
+    Which other drifted ancestors is this candidate's current signal actually
+    correlated with? Used to populate `confounded_with` with nodes that
+    plausibly explain (or share a cause with) this candidate's apparent
+    drift, rather than an arbitrary slice of "other ancestors that exist".
+    """
+    correlated: list[tuple[str, float]] = []
+    for other_urn in other_ancestor_urns:
+        other_current = upstream_samples[other_urn].current
+        n = min(len(candidate_current), len(other_current))
+        if n < 10:
+            continue
+        try:
+            r = float(np.corrcoef(candidate_current[:n], other_current[:n])[0, 1])
+        except Exception:
+            continue
+        if np.isnan(r):
+            continue
+        if abs(r) >= threshold:
+            correlated.append((other_urn, abs(r)))
+    correlated.sort(key=lambda pair: pair[1], reverse=True)
+    return [urn for urn, _ in correlated[:3]]
+
+
 def _fit_linear_weights(
     downstream_baseline: np.ndarray,
     parent_baselines: dict[str, np.ndarray],
@@ -156,20 +195,20 @@ def isolate_root_causes(
     model_urn: str,
     prediction_drift: PredictionDriftResult,
     upstream_samples: dict[str, FeatureSample],
-    downstream_samples: dict[str, FeatureSample] | None = None,
 ) -> RootCauseTrace:
     """
     Main entry point. `upstream_samples` maps node_urn -> baseline/current
-    sample arrays for that node's primary feature/column (in the demo this
-    comes from the synthetic data generator; in production it would come
-    from a feature store / warehouse query per node).
+    sample arrays for every upstream node (both raw datasets and
+    intermediate feature tables) that could plausibly explain drift in the
+    model's predictions. In the demo this comes from the synthetic data
+    generator; in production it would come from a feature store /
+    warehouse query per node.
 
-    `downstream_samples` optionally provides the same for intermediate
-    feature nodes, enabling multi-hop intervention checks; if omitted, we
-    fall back to using the model's own prediction distribution as the sole
-    downstream signal (single-hop-from-model intervention).
+    All ancestor nodes with samples are used jointly in the intervention
+    regression (see `_fit_linear_weights` / `_simulate_holding_parent_at_baseline`),
+    so a raw dataset and the feature table derived from it are both tested
+    as candidates and can disambiguate each other via `confounded_with`.
     """
-    downstream_samples = downstream_samples or {}
     candidates: list[CausalCandidate] = []
 
     ancestors = upstream_nodes(dag, model_urn)
@@ -193,7 +232,6 @@ def isolate_root_causes(
             continue  # not drifted at all -> cannot be a cause
 
         hops = hops_from(dag, urn, model_urn)
-        direct_parents_of_model = list(dag.predecessors(model_urn))
 
         # --- Intervention check -------------------------------------------------
         # Compare: (a) actual downstream drift statistic vs.
@@ -203,9 +241,6 @@ def isolate_root_causes(
         intervention_delta = 0.0
         confounded_with: list[str] = []
 
-        # Find nearest downstream node we have samples for (the model's own
-        # prediction distribution is always available as the ultimate downstream signal).
-        target_baseline = prediction_drift  # placeholder for readability
         other_ancestor_urns = [a for a in ancestors if a != urn and a in upstream_samples]
 
         if other_ancestor_urns:
@@ -239,34 +274,71 @@ def isolate_root_causes(
                     + [v[:n_cur] for v in other_parents_current.values()],
                     axis=0,
                 )
-                counterfactual = _simulate_holding_parent_at_baseline(
-                    parent_baseline=sample.baseline,
-                    parent_current=sample.current,
-                    other_parents_current=other_parents_current,
-                    downstream_weights=weights,
-                    downstream_baseline=downstream_baseline_proxy,
-                    downstream_current_actual=downstream_current_actual,
-                )
+                # --- Bootstrap the counterfactual, don't trust one draw ------
+                # A single random baseline resample could overstate or
+                # understate the effect by chance. Resample N times, each
+                # with a different seed, and use the conservative lower
+                # bound of the resulting distribution (not the mean) to
+                # decide is_genuine_cause — a node only counts as a genuine
+                # cause if the effect holds up robustly across resamples,
+                # not just in the luckiest draw.
+                n_bootstrap = 25
                 actual_stat = _downstream_drift_statistic(downstream_baseline_proxy, downstream_current_actual)
-                counterfactual_stat = _downstream_drift_statistic(downstream_baseline_proxy, counterfactual)
-                intervention_delta = float(max(0.0, actual_stat - counterfactual_stat))
+                bootstrap_deltas = []
+                for b in range(n_bootstrap):
+                    counterfactual = _simulate_holding_parent_at_baseline(
+                        parent_baseline=sample.baseline,
+                        parent_current=sample.current,
+                        other_parents_current=other_parents_current,
+                        downstream_weights=weights,
+                        downstream_baseline=downstream_baseline_proxy,
+                        downstream_current_actual=downstream_current_actual,
+                        seed=1000 + b,
+                    )
+                    counterfactual_stat = _downstream_drift_statistic(downstream_baseline_proxy, counterfactual)
+                    bootstrap_deltas.append(max(0.0, actual_stat - counterfactual_stat))
+
+                bootstrap_deltas = np.array(bootstrap_deltas)
+                intervention_delta = float(np.mean(bootstrap_deltas))
+                intervention_delta_lower_ci = float(np.percentile(bootstrap_deltas, 5))
+                intervention_delta_upper_ci = float(np.percentile(bootstrap_deltas, 95))
 
                 # Confounding: nodes whose own KS statistic is high but whose
                 # intervention_delta is low relative to their raw drift are
-                # confounded with whichever ancestor actually explains the gap.
+                # confounded with whatever other drifted ancestor their
+                # current signal actually correlates with.
                 if intervention_delta < settings.INTERVENTION_DELTA_MIN and drift_result.statistic > 0.15:
-                    confounded_with = other_ancestor_urns[:3]
+                    confounded_with = _correlated_ancestors(
+                        candidate_urn=urn,
+                        candidate_current=sample.current,
+                        other_ancestor_urns=other_ancestor_urns,
+                        upstream_samples=upstream_samples,
+                    )
             except Exception:
                 # Fall back gracefully: treat raw drift statistic as a weak
                 # proxy for intervention_delta if the regression is degenerate
-                # (e.g. too few overlapping samples).
+                # (e.g. too few overlapping samples). Logged, not silent —
+                # this path means the result for this candidate is a weaker
+                # approximation and worth knowing about when debugging.
+                logger.warning(
+                    "Intervention regression failed for %s; falling back to "
+                    "raw-drift-statistic proxy for intervention_delta.",
+                    urn, exc_info=True,
+                )
                 intervention_delta = drift_result.statistic * 0.5
+                intervention_delta_lower_ci = intervention_delta
+                intervention_delta_upper_ci = intervention_delta
         else:
             # Only one drifted ancestor found -> no confounding possible,
             # its own drift statistic stands in directly as the intervention effect.
             intervention_delta = drift_result.statistic
+            intervention_delta_lower_ci = intervention_delta
+            intervention_delta_upper_ci = intervention_delta
 
-        is_genuine_cause = intervention_delta >= settings.INTERVENTION_DELTA_MIN
+        # Require the conservative lower bound (not the point estimate) to
+        # clear the threshold — a candidate whose effect only sometimes
+        # clears the bar under resampling is not robustly a genuine cause.
+        is_genuine_cause = intervention_delta_lower_ci >= settings.INTERVENTION_DELTA_MIN
 
         candidates.append(
             CausalCandidate(
@@ -276,6 +348,8 @@ def isolate_root_causes(
                 drift_result=drift_result,
                 is_genuine_cause=is_genuine_cause,
                 intervention_delta=round(intervention_delta, 4),
+                intervention_delta_lower_ci=round(intervention_delta_lower_ci, 4),
+                intervention_delta_upper_ci=round(intervention_delta_upper_ci, 4),
                 confounded_with=confounded_with,
             )
         )
