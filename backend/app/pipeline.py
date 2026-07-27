@@ -29,37 +29,43 @@ async def run_full_pipeline(
     """
     lineage_client = get_lineage_client()
 
-    # 1. Lineage ingestion
-    graph: LineageGraph = await lineage_client.get_ml_lineage(model_urn)
-    dag = build_dag(graph)
+    try:
+        # 1. Lineage ingestion
+        graph: LineageGraph = await lineage_client.get_ml_lineage(model_urn)
+        dag = build_dag(graph)
 
-    # 2. Drift detection (demo data stands in for a real feature-store /
-    #    warehouse query in this build; the statistical machinery is real)
-    feature_samples = generate_demo_samples(inject_drift=inject_drift)
-    pred_baseline, pred_current = generate_prediction_samples(feature_samples)
-    prediction_drift = prediction_output_drift(pred_baseline, pred_current, model_urn)
+        # 2. Drift detection (demo data stands in for a real feature-store /
+        #    warehouse query in this build; the statistical machinery is real)
+        feature_samples = generate_demo_samples(inject_drift=inject_drift)
+        pred_baseline, pred_current = generate_prediction_samples(feature_samples)
+        prediction_drift = prediction_output_drift(pred_baseline, pred_current, model_urn)
 
-    # 3. Causal root-cause isolation
-    trace = isolate_root_causes(
-        graph=graph,
-        dag=dag,
-        model_urn=model_urn,
-        prediction_drift=prediction_drift,
-        upstream_samples=feature_samples,
-    )
+        # 3. Causal root-cause isolation
+        trace = isolate_root_causes(
+            graph=graph,
+            dag=dag,
+            model_urn=model_urn,
+            prediction_drift=prediction_drift,
+            upstream_samples=feature_samples,
+        )
 
-    result: dict = {"graph": graph, "trace": trace, "report": None, "writeback": None}
+        result: dict = {"graph": graph, "trace": trace, "report": None, "writeback": None}
 
-    if trace.isolated_root_causes:
-        # 4. LLM reasoning & explanation layer
-        reasoning = get_reasoning_layer()
-        report: RootCauseReport = reasoning.generate_report(trace)
-        result["report"] = report
+        if trace.isolated_root_causes:
+            # 4. LLM reasoning & explanation layer
+            reasoning = get_reasoning_layer()
+            report: RootCauseReport = reasoning.generate_report(trace)
+            result["report"] = report
 
-        # 5. Write-back agent
-        if write_back:
-            agent = WriteBackAgent(lineage_client)
-            wb: WriteBackResult = await agent.run(report)
-            result["writeback"] = wb
+            # 5. Write-back agent
+            if write_back:
+                agent = WriteBackAgent(lineage_client)
+                wb: WriteBackResult = await agent.run(report)
+                result["writeback"] = wb
 
-    return result
+        return result
+    finally:
+        # Real DataHubMCPClient holds a subprocess/session; must be released
+        # after every run or long-lived deployments leak subprocesses.
+        # MockDataHubClient's aclose() is a no-op inherited from the base class.
+        await lineage_client.aclose()

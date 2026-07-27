@@ -18,9 +18,15 @@ router = APIRouter()
 async def get_lineage(model_urn: str) -> LineageGraph:
     """Return the raw lineage DAG for the live lineage graph view."""
     client = get_lineage_client()
-    graph = await client.get_ml_lineage(model_urn)
-    build_dag(graph)  # validates it's a real DAG (no cycles) before returning
-    return graph
+    try:
+        graph = await client.get_ml_lineage(model_urn)
+        build_dag(graph)  # validates it's a real DAG (no cycles) before returning
+        return graph
+    except Exception as exc:  # noqa: BLE001 - never leak internals to the client
+        detail = str(exc) if settings.ENV == "development" else "Lineage fetch failed. Check server logs."
+        raise HTTPException(status_code=500, detail=detail) from exc
+    finally:
+        await client.aclose()
 
 
 @router.post("/investigate")

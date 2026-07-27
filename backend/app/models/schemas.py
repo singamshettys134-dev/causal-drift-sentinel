@@ -110,11 +110,21 @@ class CausalCandidate(_NoProtectedNamespace):
     is_genuine_cause: bool
     intervention_delta: float = Field(
         description=(
-            "Change in downstream drift signal when this node's contribution "
-            "is held constant vs. observed. Larger magnitude = stronger causal "
-            "evidence that this node is driving the downstream drift, rather "
-            "than merely having changed around the same time."
+            "Mean change in downstream drift signal when this node's contribution "
+            "is held constant vs. observed, across bootstrap resamples. Larger "
+            "magnitude = stronger causal evidence that this node is driving the "
+            "downstream drift, rather than merely having changed around the same time."
         )
+    )
+    intervention_delta_lower_ci: float = Field(
+        default=0.0,
+        description="5th percentile of intervention_delta across bootstrap resamples. "
+        "is_genuine_cause requires THIS (not the mean) to clear the threshold — "
+        "a robust effect, not a lucky draw.",
+    )
+    intervention_delta_upper_ci: float = Field(
+        default=0.0,
+        description="95th percentile of intervention_delta across bootstrap resamples.",
     )
     confounded_with: list[str] = Field(
         default_factory=list,
