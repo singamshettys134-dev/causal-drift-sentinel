@@ -1,11 +1,17 @@
-import React, { useCallback, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useState } from 'react'
 import { investigate } from './api/client'
 import TopBar from './components/TopBar.jsx'
-import LineageGraphView from './views/LineageGraphView.jsx'
-import DriftTimelineView from './views/DriftTimelineView.jsx'
-import RootCauseReportView from './views/RootCauseReportView.jsx'
 import StatusFooter from './components/StatusFooter.jsx'
 import './App.css'
+
+// LineageGraphView (reactflow) and DriftTimelineView (recharts) pull in the
+// two heaviest dependencies in the bundle. Lazy-loading them means the
+// initial page load only ships TopBar/StatusFooter/RootCauseReportView —
+// the graph/chart libraries load on first visit to those tabs instead of
+// blocking first paint.
+const LineageGraphView = lazy(() => import('./views/LineageGraphView.jsx'))
+const DriftTimelineView = lazy(() => import('./views/DriftTimelineView.jsx'))
+const RootCauseReportView = lazy(() => import('./views/RootCauseReportView.jsx'))
 
 const MODEL_URN = 'urn:li:mlModel:(demo,fraud_model_v3,PROD)'
 
@@ -72,9 +78,11 @@ export default function App() {
       </div>
 
       <main className="main-panel">
-        {activeTab === 'graph' && <LineageGraphView result={result} stage={stage} />}
-        {activeTab === 'timeline' && <DriftTimelineView result={result} />}
-        {activeTab === 'report' && <RootCauseReportView result={result} />}
+        <Suspense fallback={<div className="empty-state mono">Loading view…</div>}>
+          {activeTab === 'graph' && <LineageGraphView result={result} stage={stage} />}
+          {activeTab === 'timeline' && <DriftTimelineView result={result} />}
+          {activeTab === 'report' && <RootCauseReportView result={result} />}
+        </Suspense>
       </main>
 
       <StatusFooter result={result} stage={stage} />

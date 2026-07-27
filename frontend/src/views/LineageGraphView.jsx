@@ -22,7 +22,7 @@ const LAYOUT = {
   'urn:li:mlModelDeployment:(demo,fraud_model_v3_prod)': { x: 880, y: 130 },
 }
 
-function nodeStatus(urn, result) {
+export function nodeStatus(urn, result) {
   if (!result) return 'idle'
   const trace = result.trace
   const rootCause = trace?.isolated_root_causes?.some((c) => c.node_urn === urn)
