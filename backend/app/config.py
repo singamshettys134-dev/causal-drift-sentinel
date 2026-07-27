@@ -23,9 +23,23 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2000
 
     # --- DataHub integration ---------------------------------------------------
+    # Self-hosted mcp-server-datahub is normally launched as a stdio subprocess
+    # (the same way Claude Desktop / Cursor connect to it), configured via these
+    # two env vars passed straight through to that subprocess.
     DATAHUB_GMS_URL: str = "http://localhost:8080"
-    DATAHUB_TOKEN: str = ""
-    DATAHUB_MCP_URL: str = ""  # DataHub MCP Server / Agent Context Kit endpoint
+    DATAHUB_GMS_TOKEN: str = ""
+    # Command used to launch the MCP server subprocess. Default assumes `uv`
+    # is installed (matches the official quickstart); override if you installed
+    # it differently (e.g. "mcp-server-datahub" if installed via pip).
+    DATAHUB_MCP_COMMAND: str = "uvx"
+    DATAHUB_MCP_ARGS: str = "mcp-server-datahub"
+    # DataHub Cloud's managed MCP server is reached over URL/SSE instead of a
+    # local subprocess. If set, this takes priority over the stdio subprocess mode.
+    DATAHUB_MCP_URL: str = ""
+    # Mutation tools (add_tags, update_description, etc.) are opt-in on the
+    # DataHub side via TOOLS_IS_MUTATION_ENABLED — mirror that here so our
+    # write-back path fails clearly instead of silently no-op-ing.
+    DATAHUB_MUTATION_ENABLED: bool = False
 
     # --- GitHub integration ------------------------------------------------
     GITHUB_TOKEN: str = ""
