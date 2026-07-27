@@ -1,26 +1,47 @@
 """
 Lineage Graph Ingestion Layer (spec Section 3 & 6, step 2).
 
-Responsible for pulling ML lineage from DataHub (via the DataHub MCP Server /
-Agent Context Kit) and materializing it into our internal LineageGraph model.
+Responsible for pulling ML lineage from DataHub (via the official DataHub
+MCP Server, acryldata/mcp-server-datahub) and materializing it into our
+internal LineageGraph model.
 
 Two implementations are provided behind the same interface:
-  - DataHubMCPClient: talks to a real DataHub MCP Server over HTTP/SSE.
+  - DataHubMCPClient: talks to the real DataHub MCP Server, either as a
+    local stdio subprocess (self-hosted DataHub — the standard way MCP
+    clients like Claude Desktop/Cursor connect to it) or over SSE (DataHub
+    Cloud's managed MCP server, if DATAHUB_MCP_URL is set).
   - MockDataHubClient: synthesizes a realistic demo lineage graph so the
     full pipeline can run end-to-end without a live DataHub instance
     (used for `USE_MOCK_DATAHUB=true`, e.g. local dev / hackathon demo).
 
-Swapping between them is a one-line change in api/dependencies.py — nothing
-downstream (drift engine, causal engine, LLM layer) needs to know which one
-is active, since both return the same LineageGraph shape.
+Swapping between them is a one-line change in get_lineage_client() below —
+nothing downstream (drift engine, causal engine, LLM layer) needs to know
+which one is active, since both return the same LineageGraph shape.
+
+IMPORTANT — real tool names, verified against DataHub's published docs
+(https://docs.datahub.com/docs/features/feature-guides/mcp):
+  Read-only:  search, get_entities, get_lineage, get_dataset_queries,
+              list_schema_fields, get_lineage_paths_between
+  Mutation (opt-in via TOOLS_IS_MUTATION_ENABLED=true on the server):
+              add_tags, remove_tags, update_description, add_owners,
+              set_domains
+
+There is NO incident-creation tool in the official server, so our
+write-back path uses `add_tags` + `update_description` to annotate the
+model entity directly, rather than the (non-existent) "create_incident"
+this file originally assumed. Exact per-tool parameter names have shifted
+across mcp-server-datahub releases (e.g. the `filter` param was renamed
+from a dict to a string between versions) — before your demo, run
+`session.list_tools()` once against your installed version and confirm
+the argument names below still match; adjust `_call_tool` arguments if not.
 """
 from __future__ import annotations
 
-import abc
 import json
+from contextlib import AsyncExitStack
 from typing import Any
 
-import httpx
+import abc
 
 from app.config import settings
 from app.models.schemas import LineageEdge, LineageGraph, LineageNode, NodeType
@@ -34,75 +55,119 @@ class BaseLineageClient(abc.ABC):
 
     @abc.abstractmethod
     async def write_incident(self, model_urn: str, incident_payload: dict[str, Any]) -> str:
-        """Write a structured incident annotation back onto the model entity. Returns incident URN."""
+        """Annotate the model entity with the diagnosis. Returns an identifier for the write."""
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        """Release any held resources (subprocess, connection). No-op by default."""
+        return None
 
 
 class DataHubMCPClient(BaseLineageClient):
     """
-    Talks to a real DataHub MCP Server (or Agent Context Kit) to pull ML
-    lineage and write back incidents.
+    Talks to the real DataHub MCP Server using the official `mcp` Python SDK.
 
-    DataHub's MCP server exposes tools for entity search, lineage traversal,
-    and metadata mutation. We call those tools over the MCP protocol rather
-    than hitting the raw GMS REST API directly, so this stays aligned with
-    however DataHub evolves that surface.
+    Self-hosted DataHub: connects over stdio, spawning `mcp-server-datahub`
+    as a subprocess (DATAHUB_MCP_COMMAND/DATAHUB_MCP_ARGS), exactly like
+    Claude Desktop or Cursor would, with DATAHUB_GMS_URL/DATAHUB_GMS_TOKEN
+    passed through as env vars to that subprocess.
+
+    DataHub Cloud (managed MCP server): connects over SSE instead, if
+    DATAHUB_MCP_URL is set.
     """
 
-    def __init__(self, mcp_url: str, token: str):
-        self.mcp_url = mcp_url
-        self.token = token
-        self._client = httpx.AsyncClient(
-            base_url=mcp_url,
-            headers={"Authorization": f"Bearer {token}"} if token else {},
-            timeout=30.0,
-        )
+    def __init__(self):
+        self._session = None
+        self._exit_stack: AsyncExitStack | None = None
 
-    async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """
-        Minimal MCP JSON-RPC 'tools/call' invocation. A production build would
-        use a full MCP client SDK (session init, capability negotiation);
-        this is intentionally the thin transport needed for our two tools.
-        """
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        }
-        resp = await self._client.post("/", json=payload)
-        resp.raise_for_status()
-        result = resp.json()
-        if "error" in result:
-            raise RuntimeError(f"MCP tool '{tool_name}' failed: {result['error']}")
-        return result["result"]
+    async def _ensure_session(self):
+        if self._session is not None:
+            return self._session
+
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        self._exit_stack = AsyncExitStack()
+
+        if settings.DATAHUB_MCP_URL:
+            from mcp.client.sse import sse_client
+            read, write = await self._exit_stack.enter_async_context(
+                sse_client(settings.DATAHUB_MCP_URL)
+            )
+        else:
+            server_params = StdioServerParameters(
+                command=settings.DATAHUB_MCP_COMMAND,
+                args=settings.DATAHUB_MCP_ARGS.split(),
+                env={
+                    "DATAHUB_GMS_URL": settings.DATAHUB_GMS_URL,
+                    "DATAHUB_GMS_TOKEN": settings.DATAHUB_GMS_TOKEN,
+                    "TOOLS_IS_MUTATION_ENABLED": str(settings.DATAHUB_MUTATION_ENABLED).lower(),
+                },
+            )
+            read, write = await self._exit_stack.enter_async_context(stdio_client(server_params))
+
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        self._session = session
+        return session
+
+    async def aclose(self):
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+            self._session = None
+
+    async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        session = await self._ensure_session()
+        result = await session.call_tool(tool_name, arguments)
+        if result.isError:
+            raise RuntimeError(f"MCP tool '{tool_name}' failed: {result.content}")
+        # Tool results come back as a list of content blocks; text blocks carry JSON.
+        text_parts = [block.text for block in result.content if getattr(block, "type", None) == "text"]
+        raw_text = "\n".join(text_parts)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            return raw_text  # some tools return plain text rather than JSON
 
     async def get_ml_lineage(self, model_urn: str) -> LineageGraph:
         raw = await self._call_tool(
             "get_lineage",
-            {"urn": model_urn, "direction": "UPSTREAM", "degree": "MULTI_HOP", "types": [
-                "DATASET", "ML_FEATURE_TABLE", "ML_MODEL", "ML_MODEL_DEPLOYMENT"
-            ]},
+            {"urn": model_urn, "direction": "upstream"},
         )
         return _parse_datahub_lineage_response(raw, model_urn)
 
     async def write_incident(self, model_urn: str, incident_payload: dict[str, Any]) -> str:
-        result = await self._call_tool(
-            "create_incident",
-            {
-                "entity_urn": model_urn,
-                "type": "DATA_QUALITY",
-                "title": incident_payload.get("summary", "Model drift incident"),
-                "description": json.dumps(incident_payload, default=str),
-                "status": "OPEN",
-                "source": "causal-drift-sentinel-agent",
-            },
-        )
-        return result.get("incident_urn", f"urn:li:incident:(mock,{model_urn})")
+        """
+        No native incident tool exists, so we annotate the entity directly:
+        tag it as drift-detected and append the diagnosis to its description.
+        Requires DATAHUB_MUTATION_ENABLED=true (mirrors the server's
+        TOOLS_IS_MUTATION_ENABLED flag) — otherwise this raises clearly
+        instead of silently no-op-ing.
+        """
+        if not settings.DATAHUB_MUTATION_ENABLED:
+            raise RuntimeError(
+                "DataHub write-back requires DATAHUB_MUTATION_ENABLED=true "
+                "(and the server's TOOLS_IS_MUTATION_ENABLED=true) — mutation "
+                "tools are opt-in on both sides."
+            )
+        await self._call_tool("add_tags", {"urn": model_urn, "tags": ["drift-detected"]})
+        summary = incident_payload.get("summary", "Model drift detected.")
+        note = f"\n\n[causal-drift-sentinel] {summary}"
+        await self._call_tool("update_description", {"urn": model_urn, "description_append": note})
+        return f"annotated:{model_urn}"
 
 
-def _parse_datahub_lineage_response(raw: dict[str, Any], root_model_urn: str) -> LineageGraph:
-    """Translate DataHub's lineage response shape into our internal LineageGraph."""
+def _parse_datahub_lineage_response(raw: Any, root_model_urn: str) -> LineageGraph:
+    """
+    Translate DataHub's get_lineage tool response into our internal
+    LineageGraph. The exact response shape can vary slightly by
+    mcp-server-datahub version — this handles the common
+    {"entities": [...], "relationships": [...]} shape and falls back to a
+    flatter {"results": [{"urn", "hops", "paths"}, ...]} shape some versions
+    return. Verify against your installed version's actual output (call
+    `list_tools()` / run the tool once) and adjust here if it differs.
+    """
     nodes: list[LineageNode] = []
     edges: list[LineageEdge] = []
     type_map = {
@@ -111,26 +176,36 @@ def _parse_datahub_lineage_response(raw: dict[str, Any], root_model_urn: str) ->
         "ML_MODEL": NodeType.MODEL,
         "ML_MODEL_DEPLOYMENT": NodeType.DEPLOYMENT,
     }
-    for entity in raw.get("entities", []):
-        nodes.append(
-            LineageNode(
-                urn=entity["urn"],
-                name=entity.get("name", entity["urn"]),
-                node_type=type_map.get(entity.get("entityType", "DATASET"), NodeType.DATASET),
-                platform=entity.get("platform"),
-                description=entity.get("description"),
-                schema_fields=entity.get("schemaFieldNames", []),
-                tags=entity.get("tags", []),
+
+    if isinstance(raw, dict) and "entities" in raw:
+        for entity in raw.get("entities", []):
+            nodes.append(
+                LineageNode(
+                    urn=entity["urn"],
+                    name=entity.get("name", entity["urn"]),
+                    node_type=type_map.get(entity.get("entityType", "DATASET"), NodeType.DATASET),
+                    platform=entity.get("platform"),
+                    description=entity.get("description"),
+                    schema_fields=entity.get("schemaFieldNames", []),
+                    tags=entity.get("tags", []),
+                )
             )
-        )
-    for rel in raw.get("relationships", []):
-        edges.append(
-            LineageEdge(
-                upstream_urn=rel["upstreamUrn"],
-                downstream_urn=rel["downstreamUrn"],
-                relationship=rel.get("type", "derives_from"),
+        for rel in raw.get("relationships", []):
+            edges.append(
+                LineageEdge(
+                    upstream_urn=rel["upstreamUrn"],
+                    downstream_urn=rel["downstreamUrn"],
+                    relationship=rel.get("type", "derives_from"),
+                )
             )
-        )
+    elif isinstance(raw, dict) and "results" in raw:
+        for item in raw.get("results", []):
+            urn = item["urn"]
+            nodes.append(LineageNode(urn=urn, name=urn, node_type=NodeType.DATASET))
+            for path in item.get("paths", []):
+                for a, b in zip(path, path[1:]):
+                    edges.append(LineageEdge(upstream_urn=a, downstream_urn=b))
+
     return LineageGraph(nodes=nodes, edges=edges, root_model_urn=root_model_urn)
 
 
@@ -247,4 +322,4 @@ class MockDataHubClient(BaseLineageClient):
 def get_lineage_client() -> BaseLineageClient:
     if settings.USE_MOCK_DATAHUB:
         return MockDataHubClient()
-    return DataHubMCPClient(mcp_url=settings.DATAHUB_MCP_URL, token=settings.DATAHUB_TOKEN)
+    return DataHubMCPClient()
