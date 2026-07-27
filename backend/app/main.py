@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+import time
+from collections import defaultdict, deque
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.config import settings
@@ -23,6 +27,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Minimal rate limiter -------------------------------------------------
+# /api/investigate burns a real LLM call (Groq quota) and, if write-back is
+# ever enabled, real GitHub/DataHub writes. A public judge-facing demo URL
+# with no limiter could be hit repeatedly and exhaust that quota. This is a
+# simple in-memory fixed-window limiter per client IP — sufficient for a
+# single-instance hackathon deployment; a multi-instance production
+# deployment would need a shared store (e.g. Redis) instead.
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_REQUESTS = 5
+_request_log: dict[str, deque] = defaultdict(deque)
+
+
+@app.middleware("http")
+async def rate_limit_investigate(request: Request, call_next):
+    if request.url.path == "/api/investigate":
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        log = _request_log[client_ip]
+        while log and now - log[0] > _RATE_LIMIT_WINDOW_SECONDS:
+            log.popleft()
+        if len(log) >= _RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded. Please wait a minute before trying again."},
+            )
+        log.append(now)
+    return await call_next(request)
+
 
 app.include_router(router, prefix="/api")
 

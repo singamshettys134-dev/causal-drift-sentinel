@@ -8,11 +8,15 @@ concrete suggested fix.
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.config import settings
 from app.lineage.datahub_client import BaseLineageClient
 from app.models.schemas import RootCauseReport, WriteBackResult
+
+logger = logging.getLogger(__name__)
 
 
 GITHUB_API = "https://api.github.com"
@@ -106,11 +110,22 @@ class WriteBackAgent:
             return resp.json().get("html_url")
 
     async def run(self, report: RootCauseReport) -> WriteBackResult:
-        incident_urn = await self.write_datahub_incident(report)
+        incident_urn = None
+        try:
+            incident_urn = await self.write_datahub_incident(report)
+        except Exception as exc:  # noqa: BLE001
+            # DataHub write-back is best-effort, same as GitHub below — a
+            # misconfigured or unreachable DataHub instance shouldn't crash
+            # the whole /investigate request when the causal finding itself
+            # is already valid and returned regardless.
+            logger.warning("DataHub write-back failed: %s", exc, exc_info=True)
+            incident_urn = None
+
         issue_url = None
         try:
             issue_url = await self.open_github_issue(report)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            logger.warning("GitHub write-back failed: %s", exc)
             issue_url = None  # non-fatal: GitHub write-back is best-effort in demo mode
 
         return WriteBackResult(
